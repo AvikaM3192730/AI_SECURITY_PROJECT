@@ -16,8 +16,11 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-# Import our secure LangGraph app
-from judge_agent import app
+# Import our secure LangGraph pipeline.
+# NOTE: it must NOT be named `app` here - that name belongs to the Flask app.
+# (The original code imported it as `app` and then overwrote it with the
+# Flask instance, so /api/analyze crashed on every request.)
+from judge_agent import app as judge_app
 
 app = Flask(__name__)
 CORS(app)
@@ -55,12 +58,13 @@ def analyze_prompt():
         
     try:
         # Run the enterprise LangGraph pipeline
-        result_state = app.invoke({
-            "user_input": user_prompt, 
+        result_state = judge_app.invoke({
+            "user_input": user_prompt,
             "session_history": session_memories[client_ip]
         })
-        
+
         verdict = result_state.get("verdict", "UNKNOWN")
+        reason = result_state.get("reason", "")
         critic_score = result_state.get("critic_score", 0.0)
         
         # Update session memory (sliding window of 4)
@@ -71,6 +75,7 @@ def analyze_prompt():
         return jsonify({
             "status": "success",
             "verdict": verdict,
+            "reason": reason,
             "critic_score": critic_score,
             "rate_limit_policy": "5 requests per minute"
         })

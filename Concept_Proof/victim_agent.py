@@ -1,4 +1,3 @@
-input_text=input()
 def run_agent(input_text):
     print("\n🤖 Worker Agent Processing...\n")
 
