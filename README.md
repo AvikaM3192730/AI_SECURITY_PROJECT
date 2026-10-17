@@ -136,3 +136,45 @@ Python 3, LangGraph, LangChain, Groq (Llama 3 8B), Flask, Supabase (optional),
 Ollama (standalone demo only).
 
 Author: Avika - B.Tech CSE | AI Safety & Security
+
+
+## Fast classifier stage (optional)
+
+`pip install "mi-guard[classifier]"` adds a pretrained classifier
+(`protectai/deberta-v3-base-prompt-injection-v2`, CPU, about 0.1 s per prompt).
+It only blocks confident detections (probability >= 0.90) before the LLM judge
+and never marks a prompt safe, so everything else still reaches the judge.
+Set `MI_GUARD_FAST_CLASSIFIER=0` to turn it off.
+
+Measured on the public deepset/prompt-injections test split (60 attacks, 56 benign):
+
+| Stage | Attacks caught | False alarms |
+|---|---|---|
+| Rules only | 0 / 60 | 0 / 56 |
+| Classifier (>= 0.90) | 20 / 60 | 0 / 56 |
+
+The classifier misses 40 of 60 attacks (many are German; the model is mostly
+English), which is why it cannot replace the LLM judge. The model's own training
+data may overlap with this benchmark, so treat these numbers as optimistic.
+
+## Indirect injection benchmark (AgentDojo)
+
+`evaluate_indirect.py` builds tool outputs from AgentDojo v1.2.1 (workspace,
+travel, banking, slack suites), with and without injected instructions, and
+checks whether the firewall flags them. This is a detection test, not
+AgentDojo's attack-success-rate: the full harness needs an agent LLM and paid
+API calls, so it was not run.
+
+Results (1,728 injected tool outputs, 339 benign ones):
+
+| Stage | Injections flagged | Benign flagged |
+|---|---|---|
+| Rules only | 0.0% | 0.0% |
+| Classifier (>= 0.90) | 49.6% | 21.2% |
+
+By attack template, classifier detection: ignore_previous 80.6%,
+important_instructions 52.6%, system_message 39.1%, direct 26.2%.
+The classifier false-alarms on 1 in 5 benign tool outputs, so use it on user
+prompts, not on web or tool text. The rule stage catches none of these, so
+indirect screening currently depends on the LLM judge. Full-pipeline numbers
+with the LLM judge still need a Groq key.
