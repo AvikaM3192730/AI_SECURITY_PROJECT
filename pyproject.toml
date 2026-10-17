@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mi-guard"
+version = "0.1.0"
+description = "LangGraph multi-agent security firewall that screens LLM prompts for prompt injection and jailbreaks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "langchain-core",
+    "langchain-groq",
+    "langchain-community",
+    "langgraph",
+    "supabase",
+    "python-dotenv",
+    "wikipedia",
+]
+
+[project.optional-dependencies]
+server = ["flask", "flask-cors", "Flask-Limiter"]
+eval = ["pandas", "pyarrow"]
+
+[tool.setuptools.packages.find]
+include = ["mi_guard*"]
