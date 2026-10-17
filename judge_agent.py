@@ -26,11 +26,38 @@ from supabase import create_client, Client
 from langchain_community.tools.wikipedia.tool import WikipediaQueryRun
 from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
 
+# Stage 1 rule engine lives in the dependency-free mi_guard package
+from mi_guard.rules import (
+    STAGE1_SIGNATURES,
+    stage1_filter,
+    _check_base64_payload,
+    _normalize_obfuscation,
+)
+
 # Load environment variables
 load_dotenv()
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+_supabase_client = None
+
+def get_supabase() -> Optional[Client]:
+    """Lazily create the Supabase client. Returns None when unconfigured,
+    so the firewall still runs (without threat memory) in environments
+    that do not have SUPABASE_URL / SUPABASE_KEY set."""
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client or None
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("[Supabase Warning] SUPABASE_URL/SUPABASE_KEY not set - threat memory disabled.")
+        _supabase_client = False
+        return None
+    try:
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        print(f"[Supabase Warning] Could not initialize client: {e}")
+        _supabase_client = False
+    return _supabase_client or None
 
 # ============================================================
 # ENTERPRISE CONSTANTS
@@ -44,99 +71,28 @@ MAX_PROMPT_LENGTH = 1500
 # ============================================================
 
 # Hard signatures for known attack families
-STAGE1_SIGNATURES = {
-    "Instruction Override": [
-        r"ignore\s+(all\s+)?(previous|prior)\s+instructions",
-        r"forget\s+(all\s+|your\s+)?(previous|prior)\s+instructions",
-        r"disregard\s+(all\s+)?(previous|prior|your)\s+instructions",
-        r"override\s+(system|instructions|rules|prompt)",
-        r"system\s+override",
-        r"emergency\s+protocol",
-        r"new\s+instructions\s+(are|follow|replace)",
-    ],
-    "Persona Jailbreak": [
-        r"\bdan\b",  # Do Anything Now
-        r"developer\s+mode",
-        r"jailbreak",
-        r"act\s+as\s+(an?\s+)?(unfiltered|unrestricted|uncensored)",
-        r"pretend\s+(you\s+are|to\s+be)\s+(an?\s+)?(ai|assistant).*(no\s+rules|unrestricted)",
-        r"imagine\s+you\s+(have\s+no|are\s+without)\s+(rules|restrictions|filters)",
-        r"you\s+are\s+now\s+(freed?|unrestricted|without\s+rules)",
-    ],
-    "Data Exfiltration": [
-        r"(reveal|output|print|show|repeat|display)\s+(your\s+)?(system\s+prompt|initial\s+prompt|hidden\s+instructions|original\s+instructions)",
-        r"what\s+(is|was|were)\s+(your|the)\s+(exact\s+)?(system\s+prompt|initial\s+instruction)",
-        r"tell\s+me\s+(your|the)\s+system\s+prompt",
-        # Catches "output your system configuration", "raw text of your initialization"
-        r"(output|print|show|display|repeat|dump)\s+(the\s+)?(raw\s+)?(text\s+of\s+(your|the)\s+)?(system\s+configuration|initialization\s+(data|parameters|instructions?)|base\s+configuration)",
-        r"(system\s+configuration|initialization\s+(data|parameters|instructions?))\s+(that\s+was\s+loaded|at\s+startup|before\s+this\s+conversation)",
-        # Catches "required for audit trail / compliance review / data audit"
-        r"(for\s+(the\s+)?(data\s+)?audit\s+(trail|log)|for\s+compliance\s+review|required\s+for\s+(the\s+)?audit)",
-    ],
-    "Authority Impersonation": [
-        r"(admin|administrator|root|developer|operator)\s+(says?|told|ordered|authorized|override)",
-        r"(this\s+is\s+(a\s+)?|)authorized\s+by\s+(admin|root|developer|operator)",
-    ],
-    "Payload Splitting": [
-        r"(part\s+1|part\s+2|a=|b=|x=|y=).*(combine|execute|run|concatenate)",
-        r"(combine|execute|run).*(part\s+1|part\s+2|a=|b=|x=|y=)",
-    ],
-    "Encoded Payload": [
-        # Base64 pattern: long base64 string followed by decode/execute instructions
-        r"(decode|execute|run|interpret)\s+(the\s+following\s+)?(base64|rot13|encoded)",
-        r"base64\s+.{10,}\s+(decode|execute|and\s+execute)",
-    ],
-}
 
-def _check_base64_payload(text: str) -> bool:
-    """Tries to decode any base64-looking chunks and checks if the decoded text is malicious."""
-    b64_candidates = re.findall(r'[A-Za-z0-9+/=]{20,}', text)
-    for candidate in b64_candidates:
-        try:
-            decoded = base64.b64decode(candidate + "==").decode('utf-8', errors='ignore')
-            danger_words = ["ignore", "override", "hack", "exploit", "bypass", "system prompt", "password", "rm -rf", "delete"]
-            if any(word in decoded.lower() for word in danger_words):
-                return True
-        except Exception:
-            pass
-    return False
 
-def _normalize_obfuscation(text: str) -> str:
-    """
-    Aggressive pre-processing to defeat leetspeak, zero-width spaces, and punctuation tricks.
-    This prepares the text for Stage 1 Regex without destroying words.
-    """
-    text = text.lower()
-    
-    # 1. Strip zero-width / invisible unicode characters completely
-    text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
-    
-    # 2. Defeat basic leetspeak bypassing words like "1gn0r3" or "d@n"
-    leetspeak_map = {'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b', '@': 'a', '$': 's'}
-    for k, v in leetspeak_map.items():
-        text = text.replace(k, v)
-        
-    # 3. Collapse multiple spaces into one to fix normal spacing
-    text = re.sub(r'\s+', ' ', text).strip()
-    
-    # 4. Remove punctuation ONLY between letters (e.g. d.a.n -> dan) to prevent bypassing regex
-    text = re.sub(r'(?<=[a-z])[\.\-\_\*]+(?=[a-z])', '', text)
-    
-    return text
 
 def load_threats() -> list[str]:
+    client = get_supabase()
+    if client is None:
+        return []
     try:
-        response = supabase.table("threats").select("prompt").execute()
+        response = client.table("threats").select("prompt").execute()
         return [row["prompt"] for row in response.data]
     except Exception as e:
         print(f"[Supabase Warning] Could not load threats: {e}")
         return []
 
 def save_threat(prompt: str):
+    client = get_supabase()
+    if client is None:
+        return
     threats = load_threats()
     if prompt not in threats:
         try:
-            supabase.table("threats").insert({"prompt": prompt}).execute()
+            client.table("threats").insert({"prompt": prompt}).execute()
         except Exception as e:
             print(f"[Supabase Warning] Could not save threat: {e}")
 
@@ -160,24 +116,6 @@ def stage0_memory_filter(user_input: str) -> Optional[Tuple[str, str]]:
                 return ("MALICIOUS", "Stage 0 memory block: 80%+ intent overlap with past recorded attack.")
                 
     return None
-
-def stage1_filter(user_input: str) -> Optional[Tuple[str, str]]:
-    """
-    Fast pre-filter. Returns (verdict, reason) if a known signature is matched,
-    or None if the input should be passed to Stage 2 (LLM).
-    Note: We run base64 check on RAW input, but regex checks on NORMALIZED input.
-    """
-    if _check_base64_payload(user_input):
-        return ("MALICIOUS", "Stage 1 hard-block: base64 encoded payload with malicious content detected.")
-
-    normalized_text = _normalize_obfuscation(user_input)
-
-    for family, patterns in STAGE1_SIGNATURES.items():
-        for pattern in patterns:
-            if re.search(pattern, normalized_text, re.IGNORECASE):
-                return ("MALICIOUS", f"Stage 1 hard-block: matched '{family}' attack signature.")
-
-    return None  # Pass to Stage 2
 
 
 # ============================================================
@@ -303,11 +241,12 @@ Re-evaluate the user input carefully. Avoid the previous mistake.
         history_text = "No previous history. This is the first turn."
 
     # Invoke LLM
-    response = chain.invoke({
+    raw = chain.invoke({
         "user_input": user_input,
         "session_history": history_text,
         "retry_context": retry_context
-    }).strip()
+    })
+    response = (raw.content if hasattr(raw, "content") else str(raw)).strip()
 
     print(f"\n[Judge Analysis - Stage 2 LLM RAW JSON]\n{response}\n")
 
@@ -379,11 +318,12 @@ def stage3_critic_analysis(user_input: str, judge_verdict: str, judge_reasoning:
     prompt = PromptTemplate.from_template(CRITIC_PROMPT_TEMPLATE)
     chain = prompt | llm
 
-    response = chain.invoke({
+    raw = chain.invoke({
         "user_input": user_input,
         "judge_verdict": judge_verdict,
         "judge_reasoning": judge_reasoning
-    }).strip()
+    })
+    response = (raw.content if hasattr(raw, "content") else str(raw)).strip()
 
     print(f"\n[Critic Analysis - RAW JSON]\n{response}\n")
 
@@ -426,7 +366,16 @@ def victim_agent_response(user_input: str) -> str:
             wiki_result = wikipedia.run(search_query)
         except Exception:
             wiki_result = "No Wikipedia results found."
-        
+
+        # Indirect-injection defense: tool output is untrusted content.
+        # Run the same rule-based screen over it before it enters a prompt.
+        tool_screen = stage1_filter(wiki_result)
+        if tool_screen is not None:
+            print(f"  [Victim Agent: BLOCKED indirect injection in tool output - {tool_screen[1]}]")
+            return ("I can't use the information I just looked up, because it "
+                    "appears to contain hidden instructions. Please ask your "
+                    "question another way.")
+
         final_prompt = f"Based on this Wikipedia snippet: {wiki_result[:1000]}\n\nAnswer the user: {user_input}"
         return llm.invoke(final_prompt).content
     else:
