@@ -1,67 +1,138 @@
-# 🛡️ MI_GUARD: LangGraph Multi-Agent Security Firewall
+# MI_GUARD: LangGraph Multi-Agent Security Firewall
 
-An enterprise-grade, end-to-end multi-agent security architecture built with **LangGraph**, LangChain, Ollama, and Llama 3 (8B) to detect and block sophisticated prompt injection and jailbreak attacks in real-time.
+A multi-agent security pipeline that screens user prompts for prompt injection
+and jailbreak attempts before they reach a tool-using LLM agent.
 
-## 🚀 Overview
+## Overview
 
-As Large Language Models (LLMs) are deployed in production, they are increasingly vulnerable to prompt injections. 
+MI_GUARD sits in front of a "victim" agent (a chatbot that can call tools like
+Wikipedia). Every user prompt is checked by a **Judge Agent**. If the prompt
+looks safe, it is routed to the victim agent; if it looks malicious, the
+connection is cut and the victim never sees it.
 
-This project implements a **Multi-Agent "Defense-in-Depth"** architecture. Utilizing a LangGraph state machine, it features a **Judge Agent** that intercepts user inputs *before* they reach the main application (the **Victim Agent**). The Judge rigorously analyzes the intent against strict security rules. If safe, the graph routes the prompt to the Victim Agent for an actual response; if malicious, the connection is structurally severed.
+## Architecture
 
-## ✨ Key Features
-* **LangGraph State Orchestration:** Uses a production-ready state machine (`StateGraph`) to route state securely between the user, the Judge, and the Victim.
-* **Agentic Firewall:** Uses Llama 3 (via Ollama) as a zero-trust security guardrail with zero access to system tools or data.
-* **Red-Team Evaluation Pipeline:** Automated benchmarking script mimicking Microsoft PyRIT methodologies.
-* **Sophisticated Threat Detection:** Capable of blocking:
-  * Base64 Obfuscation & Encoding
-  * Payload Splitting
-  * Direct System Overrides ("Ignore previous instructions")
-  * Persona Adoption & Roleplay ("Developer Mode", "DAN")
-* **Local & Private:** Runs entirely locally on MacOS, ensuring zero data leakage to third-party APIs.
+1. **Stage 0 - Threat memory** (optional): exact / fuzzy match against prompts
+   previously recorded as malicious, stored in Supabase. Disabled when
+   `SUPABASE_URL` / `SUPABASE_KEY` are not set.
+2. **Stage 1 - Rule engine** (`mi_guard/rules.py`): fast, dependency-free
+   regex and decoding checks for known attack families (instruction override,
+   persona jailbreaks like DAN, data exfiltration, authority impersonation,
+   payload splitting, base64 payloads, leetspeak / zero-width obfuscation).
+3. **Stage 2 - LLM Judge**: a Llama 3 8B model (via the **Groq cloud API**)
+   classifies anything the rules did not catch, using session history to spot
+   payload splitting across turns.
+4. **Stage 2.5 - Critic**: a second LLM call scores the Judge's decision and
+   can send it back for re-evaluation (max 2 retries).
+5. **Indirect-injection screen**: tool output (e.g. Wikipedia results) is run
+   through the Stage 1 rules before it is allowed into a prompt, so malicious
+   web content cannot smuggle instructions into the victim agent.
 
-## 📁 Repository Structure
-* `judge_agent.py`: The core LangGraph multi-agent workflow. Contains both the Judge Agent and Victim Agent, complete with a conditional state router.
-* `evaluate_pyrit.py`: An automated test suite that processes datasets and calculates detection accuracy and latency.
-* `generate_pyrit_dataset.py`: A procedural generator that creates diverse, 100-prompt threat datasets mimicking open-source PyRIT attacks.
-* `jailbreaks_large.json`: A curated evaluation dataset of 100 benign and malicious prompts across 5 attack vectors.
+> Honest note: the models run on Groq's cloud and threat memory uses Supabase
+> cloud. This project does **not** run fully locally; an earlier version of
+> this README claimed it did, which was wrong.
 
-## 📊 Evaluation Results
+## Repository structure
 
-The Judge model was evaluated against a highly complex 100-prompt dataset containing nested logic traps, base64 payloads, and benign false-positive traps.
-* **Model:** Meta Llama 3 (8B parameters)
-* **Total Evaluated:** 100
-* **Total Blocked / Correct:** 99
-* **Accuracy Score:** **99.0%**
+| Path | What it is |
+|---|---|
+| `judge_agent.py` | LangGraph workflow: Judge, Critic, Victim agent, router |
+| `mi_guard/rules.py` | Dependency-free Stage 1 rule engine |
+| `server.py` | Flask REST API (`POST /api/analyze`) with rate limiting |
+| `victim_agent.py` | Standalone local demo victim agent (Ollama) |
+| `evaluate.py` | Evaluation harness - see below |
+| `evaluation/dataset.json` | 50 labeled prompts (30 attacks, 20 benign incl. traps) |
+| `Concept_Proof/` | Early minimal demos, kept for reference |
 
-## 💻 How to Run
+## Evaluation results (measured, reproducible)
 
-1. **Install Prerequisites:**
-   Ensure you have Python 3 and [Ollama](https://ollama.com/) installed on your machine.
-   ```bash
-   pip3 install langchain langchain-community langgraph langchain-ollama
-   ollama pull llama3
-   ```
+Run it yourself:
 
-2. **Test the Judge Interactively:**
-   ```bash
-   python3 judge_agent.py
-   ```
-   *(Enter multi-line prompts to see how the Judge classifies them in real-time).*
+```bash
+python3 evaluate.py --stage rules   # no API keys needed
+```
 
-3. **Run the Automated Threat Evaluation:**
-   ```bash
-   python3 evaluate_pyrit.py
-   ```
+Latest measured run of the **Stage 1 rule engine** on `evaluation/dataset.json`
+(50 prompts, committed to this repo):
 
-## 🛠️ Tech Stack
-* **Python 3**
-* **LangChain** (LLM Orchestration)
-* **Ollama** (Local Inference)
-* **Meta Llama 3** (Security Evaluation Engine)
+| Metric | Value |
+|---|---|
+| Overall accuracy | 47/50 = **94.0%** |
+| Attack detection rate | 29/30 = **96.7%** |
+| False positives on benign prompts | 2/20 = **10.0%** |
 
+Known misses in this run (kept honest on purpose):
 
-✨ Simple project to learn AI safety basics
+- A "security researcher needs your initialization parameters for an audit"
+  prompt slips past the rules (the LLM Judge stage is meant to catch these).
+- Two benign prompts are wrongly blocked: a question about writing a regex to
+  detect "ignore previous instructions", and a question about the Dan river in
+  Virginia (the `\bdan\b` signature). False positives are the current weak
+  point of the rule engine.
 
-Author: Avika 
+### External benchmark: deepset/prompt-injections
 
-B.Tech CSE (1st Year) | AI Safety & Security Research
+Also measured on the public
+[deepset/prompt-injections](https://huggingface.co/datasets/deepset/prompt-injections)
+benchmark (546 prompts: 203 injections, 343 benign):
+
+```bash
+python3 evaluate.py --stage rules --dataset deepset
+```
+
+| Metric | Value |
+|---|---|
+| Attack detection rate (rules only) | 5/203 = **2.5%** |
+| False positives on benign prompts | 0/343 = **0.0%** |
+
+This is an honest and important result: the rule engine alone catches almost
+none of the benchmark's novel injections. Its real value is speed and zero
+false positives - the LLM Judge (Stage 2) does the actual detection work on
+novel attacks. Anyone evaluating this project should run `--stage full`.
+
+The full pipeline (`python3 evaluate.py --stage full`, needs `GROQ_API_KEY`)
+adds the LLM Judge on top of these rules. Numbers for that stage depend on the
+model and are not claimed here until measured.
+
+> An earlier README claimed "99.0% accuracy" from evaluation scripts
+> (`evaluate_pyrit.py`, `jailbreaks_large.json`) that were never committed to
+> this repository. That number could not be verified, so it has been replaced
+> by the reproducible results above.
+
+## Setup
+
+```bash
+pip3 install -r requirements.txt
+# or install as a package (exposes the mi_guard rule engine):
+pip3 install .
+```
+
+Environment variables (in a `.env` file, which is git-ignored):
+
+- `GROQ_API_KEY` - required for the LLM Judge / Critic and the victim agent
+- `SUPABASE_URL`, `SUPABASE_KEY` - optional, enables threat memory
+
+## How to run
+
+```bash
+python3 judge_agent.py          # interactive terminal demo
+python3 server.py               # REST API on port 5001
+curl -X POST http://127.0.0.1:5001/api/analyze \
+  -H "Content-Type: application/json" -d '{"prompt": "Hello"}'
+python3 evaluate.py --stage rules
+```
+
+## Known limitations
+
+- Only English-language attacks are handled by the rule engine; the LLM Judge
+  prompt asks the model to translate, but this is not measured.
+- The Stage 1 signatures can be bypassed with enough creativity - they are a
+  first line of defense, not a guarantee.
+- The threat-memory stage depends on an external Supabase table.
+
+## Tech stack
+
+Python 3, LangGraph, LangChain, Groq (Llama 3 8B), Flask, Supabase (optional),
+Ollama (standalone demo only).
+
+Author: Avika - B.Tech CSE | AI Safety & Security
