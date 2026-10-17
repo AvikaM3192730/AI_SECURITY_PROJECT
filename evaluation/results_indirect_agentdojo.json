@@ -1,0 +1,25 @@
+{
+  "summary": {
+    "benchmark": "AgentDojo v1.2.1 tool outputs (detection only, no agent LLM)",
+    "malicious_cases": 1728,
+    "benign_cases": 339,
+    "unique_texts": 941,
+    "rules_detection": 0.0,
+    "rules_false_positive": 0.0,
+    "classifier_detection_at_0.90": 0.4959,
+    "classifier_false_positive_at_0.90": 0.2124,
+    "per_attack_classifier_detection": {
+      "important_instructions": 0.5255,
+      "ignore_previous": 0.8056,
+      "direct": 0.2616,
+      "system_message": 0.3912
+    },
+    "per_attack_rules_detection": {
+      "important_instructions": 0.0,
+      "ignore_previous": 0.0,
+      "direct": 0.0,
+      "system_message": 0.0
+    },
+    "note": "scores computed with protectai/deberta-v3-base-prompt-injection-v2 on CPU; ~0.56 s per tool output (512-token cap)"
+  }
+}
