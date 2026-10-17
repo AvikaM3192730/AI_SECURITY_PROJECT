@@ -35,14 +35,14 @@ RESULTS_DIR = os.path.join(os.path.dirname(__file__), "evaluation")
 MAX_PROMPT_LENGTH = 1500  # mirror judge_agent's context limit
 
 
-def load_deepset():
+def load_deepset(split="train"):
     """Download + cache the public deepset/prompt-injections benchmark."""
-    cache = os.path.join(RESULTS_DIR, "external", "deepset_train.parquet")
+    cache = os.path.join(RESULTS_DIR, "external", f"deepset_{split}.parquet")
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     if not os.path.exists(cache):
         import urllib.request
         url = ("https://huggingface.co/api/datasets/deepset/"
-               "prompt-injections/parquet/default/train/0.parquet")
+               f"prompt-injections/parquet/default/{split}/0.parquet")
         print(f"Downloading {url} ...")
         urllib.request.urlretrieve(url, cache)
     import pandas as pd
@@ -70,6 +70,13 @@ def classify_rules(prompt: str):
     return ("SAFE", "No rule signature matched.")
 
 
+def classify_classifier(prompt: str):
+    """Fast classifier stage on its own (mi_guard.classifier)."""
+    from mi_guard.classifier import injection_probability, BLOCK_THRESHOLD
+    p = injection_probability(prompt)
+    return ("MALICIOUS" if p >= BLOCK_THRESHOLD else "SAFE", f"p={p:.4f}")
+
+
 def classify_full(prompt: str):
     """Full LangGraph pipeline. Returns (verdict, reason)."""
     from judge_agent import app as judge_app
@@ -79,21 +86,24 @@ def classify_full(prompt: str):
 
 def main():
     parser = argparse.ArgumentParser(description="MI_GUARD evaluation harness")
-    parser.add_argument("--stage", choices=["rules", "full"], default="rules")
+    parser.add_argument("--stage", choices=["rules", "classifier", "full"], default="rules")
     parser.add_argument(
-        "--dataset", choices=["builtin", "deepset"], default="builtin",
+        "--dataset", choices=["builtin", "deepset", "deepset_test"], default="builtin",
         help="builtin = evaluation/dataset.json; deepset = the public "
              "deepset/prompt-injections benchmark (546 prompts, downloaded "
              "from HuggingFace and cached under evaluation/external/).")
     args = parser.parse_args()
 
     if args.dataset == "deepset":
-        dataset = load_deepset()
+        dataset = load_deepset("train")
+    elif args.dataset == "deepset_test":
+        dataset = load_deepset("test")
     else:
         with open(DATASET_PATH, encoding="utf-8") as f:
             dataset = json.load(f)
 
-    classify = classify_rules if args.stage == "rules" else classify_full
+    classify = {"rules": classify_rules, "classifier": classify_classifier,
+                "full": classify_full}[args.stage]
 
     if args.stage == "full" and not os.environ.get("GROQ_API_KEY"):
         print("Error: --stage full requires GROQ_API_KEY in the environment.")
