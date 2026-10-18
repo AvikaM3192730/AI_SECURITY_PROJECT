@@ -66,6 +66,11 @@ def get_supabase() -> Optional[Client]:
 # Hard limit to prevent "Lost in the Middle" Context Poisoning
 MAX_PROMPT_LENGTH = 1500  
 
+# Groq model used by the judge, critic and demo victim. llama3-8b-8192 was
+# retired by Groq, so this is configurable.
+LLM_MODEL = os.environ.get("MI_GUARD_LLM_MODEL", "openai/gpt-oss-20b")
+
+
 # ============================================================
 # STAGE 1: FAST RULE-BASED PRE-FILTER
 # ============================================================
@@ -214,7 +219,7 @@ def stage2_llm_analysis(user_input: str, session_history: list[str] = None, crit
     """
     Deep semantic analysis using Llama 3 with JSON parsing, XML fencing, Session History, and RLAIF retries.
     """
-    llm = ChatGroq(model="llama3-8b-8192", temperature=0.1)
+    llm = ChatGroq(model=LLM_MODEL, temperature=0.1)
     prompt = PromptTemplate.from_template(SYSTEM_PROMPT_TEMPLATE)
     
     # Retry injection
@@ -314,7 +319,7 @@ Return ONLY strict valid JSON:
 """
 
 def stage3_critic_analysis(user_input: str, judge_verdict: str, judge_reasoning: str) -> dict:
-    llm = ChatGroq(model="llama3-8b-8192", temperature=0.1)
+    llm = ChatGroq(model=LLM_MODEL, temperature=0.1)
     prompt = PromptTemplate.from_template(CRITIC_PROMPT_TEMPLATE)
     chain = prompt | llm
 
@@ -352,7 +357,7 @@ def stage3_critic_analysis(user_input: str, judge_verdict: str, judge_reasoning:
 
 def victim_agent_response(user_input: str) -> str:
     """The tool-calling Victim Agent (RAG via Wikipedia)."""
-    llm = ChatGroq(model="llama3-8b-8192", temperature=0.7)
+    llm = ChatGroq(model=LLM_MODEL, temperature=0.7)
     wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
     
     # 1. Decide if we need facts
