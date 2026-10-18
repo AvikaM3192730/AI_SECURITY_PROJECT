@@ -425,6 +425,17 @@ def judge_node(state: AgentState):
         save_threat(user_input)
         return {"verdict": verdict, "reason": reason, "fast_path_block": True}
 
+    # Fast classifier (optional extra: pip install "mi-guard[classifier]").
+    # Confident detections are blocked here without an LLM call; everything
+    # else still goes to the judge.
+    if os.environ.get("MI_GUARD_FAST_CLASSIFIER", "1") != "0":
+        from mi_guard.classifier import classifier_filter
+        fast = classifier_filter(user_input)
+        if fast:
+            verdict, reason = fast
+            save_threat(user_input)
+            return {"verdict": verdict, "reason": reason, "fast_path_block": True}
+
     # Deep LLM Semantic Analysis Pipeline
     verdict, reason = stage2_llm_analysis(
         user_input, 
