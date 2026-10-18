@@ -178,3 +178,18 @@ The classifier false-alarms on 1 in 5 benign tool outputs, so use it on user
 prompts, not on web or tool text. The rule stage catches none of these, so
 indirect screening currently depends on the LLM judge. Full-pipeline numbers
 with the LLM judge still need a Groq key.
+
+## Full-pipeline results (rules, classifier, LLM judge and critic)
+
+Judge model: `openai/gpt-oss-20b` on Groq (the old default `llama3-8b-8192` was
+retired by Groq; set `MI_GUARD_LLM_MODEL` to use another model).
+
+| Dataset | Prompts | Attacks caught | Benign blocked wrongly |
+|---|---|---|---|
+| Built-in (`evaluation/dataset.json`) | 50 | 30 / 30 | 4 / 20 |
+| deepset test, random sample (seed 0) | 26 | 10 / 14 | 0 / 12 |
+
+Notes:
+- The built-in false alarms are 3 of 5 `benign_trap` prompts and 1 plain benign prompt. Accuracy 92% on this set.
+- The deepset run was planned for 40 prompts but stopped after 26 because of Groq's free-tier limit of 8,000 tokens per minute (`evaluate.py` now waits and retries on rate limits, and has `--limit N` for a seeded sample). With 14 attacks the detection rate (71%) has a wide margin of error.
+- The built-in set was written alongside the rules, so it flatters the system. The deepset sample is the more honest number.

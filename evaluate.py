@@ -80,7 +80,17 @@ def classify_classifier(prompt: str):
 def classify_full(prompt: str):
     """Full LangGraph pipeline. Returns (verdict, reason)."""
     from judge_agent import app as judge_app
-    state = judge_app.invoke({"user_input": prompt, "session_history": []})
+    # Groq's free tier has a tokens-per-minute cap: wait and retry on 429.
+    for attempt in range(8):
+        try:
+            state = judge_app.invoke({"user_input": prompt, "session_history": []})
+            break
+        except Exception as e:
+            if "429" not in str(e) and "rate" not in str(e).lower():
+                raise
+            time.sleep(10 + 5 * attempt)
+    else:
+        raise RuntimeError("rate limited after retries")
     return (state.get("verdict", "UNKNOWN"), state.get("reason", ""))
 
 
@@ -92,6 +102,8 @@ def main():
         help="builtin = evaluation/dataset.json; deepset = the public "
              "deepset/prompt-injections benchmark (546 prompts, downloaded "
              "from HuggingFace and cached under evaluation/external/).")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="Evaluate a random sample of this many prompts (seed 0).")
     args = parser.parse_args()
 
     if args.dataset == "deepset":
@@ -101,6 +113,10 @@ def main():
     else:
         with open(DATASET_PATH, encoding="utf-8") as f:
             dataset = json.load(f)
+
+    if args.limit and args.limit < len(dataset):
+        import random
+        dataset = random.Random(0).sample(dataset, args.limit)
 
     classify = {"rules": classify_rules, "classifier": classify_classifier,
                 "full": classify_full}[args.stage]
@@ -146,6 +162,7 @@ def main():
     summary = {
         "stage": args.stage,
         "dataset": args.dataset,
+        "sampled": args.limit or None,
         "total": total,
         "correct": tp + tn,
         "accuracy": round((tp + tn) / total, 4),
@@ -159,7 +176,8 @@ def main():
         "elapsed_seconds": round(elapsed, 2),
     }
 
-    out_path = os.path.join(RESULTS_DIR, f"results_{args.stage}_{args.dataset}.json")
+    suffix = f"_n{args.limit}" if args.limit else ""
+    out_path = os.path.join(RESULTS_DIR, f"results_{args.stage}_{args.dataset}{suffix}.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "records": records}, f, indent=2)
 
